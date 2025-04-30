@@ -1,53 +1,37 @@
 #pragma once
 
-#ifdef USE_ARDUINO
-
 #include "esphome/core/component.h"
+#include "esphome/core/log.h"
+#include "esphome/core/helpers.h"
+#include "ddp_light_effect.h"
 
-#ifdef USE_ESP32
+// For RP2040, use WiFi.h instead of ESP8266WiFi.h and LwipUDP instead of WiFiUDP
 #include <WiFi.h>
-#endif
-
-#ifdef USE_ESP8266
-#include <ESP8266WiFi.h>
-#include <WiFiUdp.h>
-#endif
-
-#ifdef USE_LIBRETINY
-#include <WiFi.h>
-#include <WiFiUdp.h>
-#endif
-
-#include <map>
-#include <memory>
-#include <set>
-#include <vector>
+#include <LwipUdp.h>
 
 namespace esphome {
 namespace ddp {
 
+static const char *const TAG = "ddp";
+static const uint16_t PORT = 4048;
+
 class DDPLightEffectBase;
 
-class DDPComponent : public esphome::Component {
+class DDPComponent : public Component {
  public:
-  DDPComponent();
-  ~DDPComponent();
-
-  void setup() override;
+  float get_setup_priority() const override { return setup_priority::LATE; }
   void loop() override;
-  float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
-
-  void add_effect(DDPLightEffectBase *light_effect);
-  void remove_effect(DDPLightEffectBase *light_effect);
+  void add_effect(DDPLightEffectBase *effect);
+  void remove_effect(DDPLightEffectBase *effect);
 
  protected:
-  std::unique_ptr<WiFiUDP> udp_;
-  std::set<DDPLightEffectBase *> light_effects_;
-
-  bool process_(const uint8_t *payload, uint16_t size);
+  // Changed from WiFiUDP to LwipUDP for RP2040
+  std::unique_ptr<LwipUDP> udp_;
+  std::vector<DDPLightEffectBase *> effects_;
 };
+
+extern DDPComponent *global_ddp_component;
 
 }  // namespace ddp
 }  // namespace esphome
-
 #endif  // USE_ARDUINO
