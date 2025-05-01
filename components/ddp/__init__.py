@@ -4,16 +4,20 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 
-# Import the component configuration
-from .component import register_ddp_component, DDPNS  # noqa
+CODEOWNERS = ["@KaufHA"]
+DEPENDENCIES = ["network"]
 
-# Export the namespace and component types
-DDP_COMPONENT_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.declare_id(DDPNS.DDPComponent),
+# Define the namespace
+CONF_DDP_ID = "ddp_id"
+ddp_ns = cg.esphome_ns.namespace("ddp")
+DDPComponent = ddp_ns.class_("DDPComponent", cg.Component)
+
+# This is what ESPHome looks for to load components
+CONFIG_SCHEMA = cv.Schema({
+    cv.GenerateID(): cv.declare_id(DDPComponent),
 }).extend(cv.COMPONENT_SCHEMA)
 
-
+# Register the component with ESPHome
 async def to_code(config):
-    """Generate code for the DDP component."""
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
