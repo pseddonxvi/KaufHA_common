@@ -1,205 +1,165 @@
-#ifdef USE_ARDUINO
-
-#include "ddp.h"
-#include "ddp_addressable_light_effect.h"
 #include "esphome/core/log.h"
+#include "ddp_addressable_light_effect.h"
 
 namespace esphome {
 namespace ddp {
 
-static const char *const TAG = "ddp_addressable_light_effect";
-
-DDPAddressableLightEffect::DDPAddressableLightEffect(const std::string &name) : AddressableLightEffect(name) {}
-
-const std::string &DDPAddressableLightEffect::get_name() { return AddressableLightEffect::get_name(); }
+static const char *const TAG = "ddp.addressable_effect";
 
 void DDPAddressableLightEffect::start() {
-
-  // backup gamma for restoring when effect ends
-  this->gamma_backup_ = this->state_->get_gamma_correct();
-  this->next_packet_will_be_first_ = true;
-
-  AddressableLightEffect::start();
-  DDPLightEffectBase::start();
-
-  // not automatically active just because enabled
-  this->get_addressable_()->set_effect_active(false);
-
+  ESP_LOGD(TAG, "Starting DDP Effect");
+  this->data_received_ = false;
+  this->colors_.clear();
+  
+  // Add this effect to the global component
+  if (global_ddp_component != nullptr) {
+    ESP_LOGD(TAG, "Adding effect to global DDP component");
+    global_ddp_component->add_effect(this);
+  } else {
+    ESP_LOGW(TAG, "Global DDP component not initialized!");
+  }
 }
 
 void DDPAddressableLightEffect::stop() {
-
-  // restore backed up gamma value and recalculate gamma table.
-  this->state_->set_gamma_correct(this->gamma_backup_);
-  this->get_addressable_()->setup_state(this->state_);
-  this->next_packet_will_be_first_ = true;
-
-  DDPLightEffectBase::stop();
-  AddressableLightEffect::stop();
+  ESP_LOGD(TAG, "Stopping DDP Effect");
+  
+  // Remove this effect from the global component
+  if (global_ddp_component != nullptr) {
+    global_ddp_component->remove_effect(this);
+  }
 }
 
 void DDPAddressableLightEffect::apply(light::AddressableLight &it, const Color &current_color) {
+  // Check if we've received DDP data
+  if (!this->data_received_) {
+    ESP_LOGW(TAG, "No DDP data received yet");
+    return;
+  }
 
-  // if receiving DDP packets times out, reset to home assistant color.
-  // apply function is not needed normally to display changes to the light
-  // from Home Assistant, but it is needed to restore value on timeout.
-  if ( this->timeout_check() ) {
-    ESP_LOGD(TAG,"DDP stream for '%s->%s' timed out.", this->state_->get_name().c_str(), this->get_name().c_str());
-    this->next_packet_will_be_first_ = true;
+  // Check if we've timed out
+  if (millis() - this->last_data_ > this->timeout_) {
+    ESP_LOGW(TAG, "DDP data timed out after %u ms", this->timeout_);
+    this->data_received_ = false;
+    return;
+  }
 
-    auto call = this->state_->turn_on();
+  // Apply colors from DDP data
+  uint32_t max_leds = std::min(it.size(), this->colors_.size());
+  for (uint32_t i = 0; i < max_leds; i++) {
+    it[i] = this->colors_[i];
+  }
 
-    call.set_color_mode_if_supported(this->state_->remote_values.get_color_mode());
-    call.set_red_if_supported(this->state_->remote_values.get_red());
-    call.set_green_if_supported(this->state_->remote_values.get_green());
-    call.set_blue_if_supported(this->state_->remote_values.get_blue());
-    call.set_brightness_if_supported(this->state_->remote_values.get_brightness());
-    call.set_color_brightness_if_supported(this->state_->remote_values.get_color_brightness());
-
-    call.set_white_if_supported(this->state_->remote_values.get_white());
-    call.set_cold_white_if_supported(this->state_->remote_values.get_cold_white());
-    call.set_warm_white_if_supported(this->state_->remote_values.get_warm_white());
-
-    call.set_publish(false);
-    call.set_save(false);
-
-    // restore backed up gamma value and recalculate gamma table.
-    this->state_->set_gamma_correct(this->gamma_backup_);
-    it.setup_state(this->state_);
-
-    // effect no longer active
-    it.set_effect_active(false);
-
-    call.perform();
-   }
-
+  // Show that we did something
+  it.schedule_show();
 }
 
-uint16_t DDPAddressableLightEffect::process_(const uint8_t *payload, uint16_t size, uint16_t used) {
-
-  // disable gamma on first received packet, not just based on effect being enabled.
-  // that way home assistant light can still be used as normal when DDP packets are not
-  // being received but effect is still enabled.
-  // gamma will be enabled again when effect disabled or on timeout.
-  if ( this->next_packet_will_be_first_ && this->disable_gamma_ ) {
-    this->state_->set_gamma_correct(0.0f);
-    this->get_addressable_()->setup_state(this->state_);
+void DDPAddressableLightEffect::on_ddp_data(const std::vector<uint8_t> &data) {
+  // Check if we have enough data for DDP header (10 bytes)
+  if (data.size() < 10) {
+    ESP_LOGW(TAG, "DDP packet too small: %u bytes", data.size());
+    return;
   }
 
-  this->next_packet_will_be_first_ = false;
-  this->last_ddp_time_ms_ = millis();
+  // Parse DDP header
+  uint8_t flags = data[0];
+  uint8_t type = data[1];
+  uint8_t id_lo = data[2];
+  uint8_t id_hi = data[3];
+  uint32_t offset = (data[4] << 16) | (data[5] << 8) | data[6];
+  uint16_t length = (data[7] << 8) | data[8];
+  uint8_t data_type = data[9];
 
-  auto *it = this->get_addressable_();
-
-  // effect is active once a ddp packet is received.
-  it->set_effect_active(true);
-
-
-#ifdef USE_ESP32
-  uint16_t num_pixels = std::min((int)it->size(), ((size-used)/3));
-#else
-  uint16_t num_pixels = min(it->size(), ((size-used)/3));
-#endif
-
-  if ( num_pixels < 1 ) { return 0; }
-
-  ESP_LOGV(TAG, "Applying DDP data for '%s' (size: %d - used: %d - num_pixels: %d)", get_name().c_str(), size, used, num_pixels);
-
-  // will be multiplied by RGB values in scale_* scaling modes
-  float multiplier = 1.0f;
-
-  // grab scaling multiplier for packet or strip level
-  // max out brightness in all but multiply mode, in which brightness is used.
-  switch (this->scaling_mode_) {
-    case DDP_SCALE_PACKET:
-      multiplier = this->scan_packet_and_return_multiplier_(payload,10,size);
-      set_max_brightness_();
-      break;
-    case DDP_SCALE_STRIP:
-      multiplier = this->scan_packet_and_return_multiplier_(payload, used, used + (num_pixels*3));
-      set_max_brightness_();
-      break;
-    case DDP_NO_SCALING:  // no scaling requires brightness maxed so that ddp values will be displayed raw.
-    case DDP_SCALE_PIXEL: // pixel scaling occurs at the pixel level, no need to scan here but we still need brightness maxed.
-      set_max_brightness_();
-    default:
-      break; // Multiply mode is default ESPHome behavior, no need to do anything to handle it.
+  // Check if this is a Push or Query data packet (type 1 or 3)
+  if (type != 1 && type != 3) {
+    ESP_LOGW(TAG, "Unsupported DDP packet type: %u", type);
+    return;
   }
 
-  // loop through all pixels being displayed now.
-  for (uint16_t i = used; i < used+(num_pixels*3); i+=3) {
+  // Check if this is RGB or RGBW data
+  uint8_t channels_per_pixel = 3;  // Default to RGB
+  if (data_type == 1) {
+    channels_per_pixel = 4;  // RGBW
+  } else if (data_type != 0) {
+    ESP_LOGW(TAG, "Unsupported DDP data type: %u", data_type);
+    return;
+  }
 
-    // get RGB value of current pixel.
-    uint8_t red   = payload[i];
-    uint8_t green = payload[i+1];
-    uint8_t blue  = payload[i+2];
+  // Check if we have enough data for the stated length
+  if (data.size() < 10 + length) {
+    ESP_LOGW(TAG, "DDP packet too small for stated length: %u < %u", data.size(), 10 + length);
+    return;
+  }
 
-    // set multiplier for this pixel if in pixel scaling mode
-    if ( this->scaling_mode_ == DDP_SCALE_PIXEL ) {
-        uint8_t max_val = 0;
+  // Resize colors vector if needed
+  uint32_t pixel_count = length / channels_per_pixel;
+  if (this->colors_.size() < offset + pixel_count) {
+    this->colors_.resize(offset + pixel_count);
+  }
 
-        // find largest value of this pixel's rgb
-        if ( (red >= green) && (red >= blue ) ) { max_val = red;   }
-        else if             ( green >= blue )   { max_val = green; }
-        else                                    { max_val = blue;  }
+  // Copy color data
+  for (uint32_t i = 0; i < pixel_count; i++) {
+    uint32_t src_offset = 10 + i * channels_per_pixel;
+    uint32_t dest_offset = offset + i;
 
-        // calculate multiplier based on max value
-        multiplier = multiplier_from_max_val_(max_val);
+    if (dest_offset < this->offset_) {
+      // Skip pixels before the offset
+      continue;
     }
 
-    // if we are in any scaling mode, multiply the pixel rgb values by the multiplier.
-    // multiply mode uses the brightness from the remote value (set in home assistant) and otherwise uses raw rgb values
-    // no_scaling mode uses raw rgb values with max brightness (set above)
-    switch (this->scaling_mode_) {
-      case DDP_SCALE_PACKET:
-      case DDP_SCALE_STRIP:
-      case DDP_SCALE_PIXEL:
-        if ( multiplier != 1.0f ) {
-          red   = (float)red   * multiplier;
-          green = (float)green * multiplier;
-          blue  = (float)blue  * multiplier;
+    uint32_t actual_offset = dest_offset - this->offset_;
+    if (actual_offset >= this->colors_.size()) {
+      // Resize if needed
+      this->colors_.resize(actual_offset + 1);
+    }
+
+    uint8_t r = data[src_offset];
+    uint8_t g = data[src_offset + 1];
+    uint8_t b = data[src_offset + 2];
+    uint8_t w = (channels_per_pixel == 4) ? data[src_offset + 3] : 0;
+
+    if (!this->disable_gamma_) {
+      // Apply gamma correction
+      r = light::gamma_correct(r, 2.8f);
+      g = light::gamma_correct(g, 2.8f);
+      b = light::gamma_correct(b, 2.8f);
+      if (channels_per_pixel == 4) {
+        w = light::gamma_correct(w, 2.8f);
+      }
+    }
+
+    // Apply brightness scaling based on the configured mode
+    float brightness = 1.0f;
+    switch (this->brightness_scaling_) {
+      case BRIGHTNESS_SCALING_ALPHA:
+        // Don't scale - DDP doesn't have an alpha channel
+        break;
+      case BRIGHTNESS_SCALING_NONE:
+        // No scaling
+        break;
+      case BRIGHTNESS_SCALING_LUMINANCE:
+        // Scale by luminance
+        brightness = 0.299f * r + 0.587f * g + 0.114f * b;
+        brightness = brightness / 255.0f;
+        if (brightness > 0.0f) {
+          r = static_cast<uint8_t>(r / brightness);
+          g = static_cast<uint8_t>(g / brightness);
+          b = static_cast<uint8_t>(b / brightness);
         }
-      default:
         break;
     }
 
-    // assign pixel color
-    auto output = (*it)[(i-used)/3];
-    output.set_rgb(red, green, blue);
+    // Create the color
+    if (channels_per_pixel == 4) {
+      this->colors_[actual_offset] = Color(r, g, b, w);
+    } else {
+      this->colors_[actual_offset] = Color(r, g, b);
+    }
   }
 
-  it->schedule_show();
-  return (num_pixels*3);
+  // Update timestamp and mark as data received
+  this->last_data_ = millis();
+  this->data_received_ = true;
 }
 
-float DDPAddressableLightEffect::scan_packet_and_return_multiplier_(const uint8_t *payload, uint16_t start, uint16_t end) {
-
-  uint8_t max_val = 0;
-
-  // look for highest value in packet or strip
-  for ( uint16_t i = start; i < end; i++ ) {
-    if ( payload[i] > max_val ) { max_val = payload[i]; }
-  }
-
-  // if max val is still 0, set to 255.  Either we didn't scan because (start == end) or there are no on pixels.
-  // if start and end values are equal, we take that to mean mode is no scaling and brightness should be maxed so that
-  // ddp values are shown raw.
-  // if all pixels are off, brightness doesn't matter.
-  return multiplier_from_max_val_(max_val);
-
-}
-
-float DDPAddressableLightEffect::multiplier_from_max_val_(uint8_t max_val) {
-  if ( max_val == 0 ) { return 1.0f; }
-  else { return this->state_->remote_values.get_brightness()*255.0f/(float)max_val; }
-}
-
-void DDPAddressableLightEffect::set_max_brightness_() {
-  this->state_->current_values.set_brightness(1.0f);
-  this->get_addressable_()->update_state(this->state_);
-}
-
-}  // namespace e131
+}  // namespace ddp
 }  // namespace esphome
-
-#endif  // USE_ARDUINO
