@@ -13,7 +13,7 @@ DDPComponent::DDPComponent() {}
 DDPComponent::~DDPComponent() {}
 
 void DDPComponent::setup() {
-  this->udp_ = make_unique<esphome::network::UDP>();
+  this->udp_ = std::make_unique<esphome::network::UDP>();
   if (!this->udp_->listen(PORT)) {
     ESP_LOGE(TAG, "Failed to start UDP listener on port %d.", PORT);
     this->mark_failed();
