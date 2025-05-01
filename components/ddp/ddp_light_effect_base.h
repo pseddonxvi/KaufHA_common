@@ -1,7 +1,5 @@
 #pragma once
 
-#ifdef USE_ARDUINO
-
 #include "esphome/core/component.h"
 #include "esphome/components/light/light_effect.h"
 #include "esphome/components/light/light_output.h"
@@ -11,11 +9,13 @@ namespace ddp {
 
 class DDPComponent;
 
-enum DDPScalingMode { DDP_NO_SCALING     = 0,
-                      DDP_SCALE_PIXEL    = 1,
-                      DDP_SCALE_STRIP    = 2,
-                      DDP_SCALE_PACKET   = 3,
-                      DDP_SCALE_MULTIPLY = 4 };
+enum DDPScalingMode {
+  DDP_NO_SCALING = 0,
+  DDP_SCALE_PIXEL = 1,
+  DDP_SCALE_STRIP = 2,
+  DDP_SCALE_PACKET = 3,
+  DDP_SCALE_MULTIPLY = 4
+};
 
 class DDPLightEffectBase {
  public:
@@ -28,9 +28,9 @@ class DDPLightEffectBase {
   bool timeout_check();
 
   void set_ddp(DDPComponent *ddp) { this->ddp_ = ddp; }
-  void set_timeout(uint32_t timeout) {this->timeout_ = timeout;}
-  void set_disable_gamma(bool disable_gamma) { this->disable_gamma_ = disable_gamma;}
-  void set_scaling_mode(DDPScalingMode scaling_mode) { this->scaling_mode_ = scaling_mode;}
+  void set_timeout(uint32_t timeout) { this->timeout_ = timeout; }
+  void set_disable_gamma(bool disable_gamma) { this->disable_gamma_ = disable_gamma; }
+  void set_scaling_mode(DDPScalingMode scaling_mode) { this->scaling_mode_ = scaling_mode; }
 
  protected:
   DDPComponent *ddp_{nullptr};
@@ -51,5 +51,3 @@ class DDPLightEffectBase {
 
 }  // namespace ddp
 }  // namespace esphome
-
-#endif  // USE_ARDUINO
