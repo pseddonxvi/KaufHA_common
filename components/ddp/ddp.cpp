@@ -1,67 +1,79 @@
-#include "esphome/core/log.h"
-#include "esphome/core/util.h"
 #include "ddp.h"
-#include "ddp_light_effect.h"
+#include "ddp_light_effect_base.h"
+#include "esphome/core/log.h"
+#include "esphome/core/application.h"
 
 namespace esphome {
 namespace ddp {
 
 static const char *const TAG = "ddp";
+static const int PORT = 4048;
 
-DDPComponent *global_ddp_component = nullptr;
+DDPComponent::DDPComponent() {}
+DDPComponent::~DDPComponent() {}
+
+void DDPComponent::setup() {
+  this->udp_ = make_unique<esphome::network::UDP>();
+  if (!this->udp_->listen(PORT)) {
+    ESP_LOGE(TAG, "Failed to start UDP listener on port %d.", PORT);
+    this->mark_failed();
+    return;
+  }
+  ESP_LOGD(TAG, "Started UDP listener on port %d.", PORT);
+}
 
 void DDPComponent::loop() {
-  if (!this->udp_)
+  if (!this->udp_) {
     return;
+  }
 
-  while (uint16_t packet_size = this->udp_->parsePacket()) {
-    std::vector<uint8_t> payload;
-    payload.resize(packet_size);
-    
-    if (!this->udp_->read(&payload[0], payload.size())) {
-      ESP_LOGW(TAG, "Error reading UDP packet!");
-      continue;
-    }
+  uint8_t payload[512];
+  int packet_size = this->udp_->recv(payload, sizeof(payload));
+  if (packet_size <= 0) {
+    return;
+  }
 
-    for (auto *effect : this->effects_) {
-      effect->on_ddp_data(payload);
-    }
+  if (!this->process_(payload, packet_size)) {
+    ESP_LOGW(TAG, "Failed to process DDP packet.");
   }
 }
 
-void DDPComponent::add_effect(DDPLightEffectBase *effect) {
-  this->effects_.push_back(effect);
-
-  // Initialize UDP if this is the first effect
-  if (this->effects_.size() == 1) {
-    // Create UDP instance for RP2040 if not already created
-    if (!this->udp_) { 
-      this->udp_ = std::unique_ptr<LwipUDP>(new LwipUDP()); 
-    }
-
-    // Begin UDP on the DDP port
-    if (!this->udp_->begin(PORT)) {
-      ESP_LOGE(TAG, "Cannot bind to UDP port %d!", PORT);
-      return;
-    }
-
-    ESP_LOGI(TAG, "DDP server started on port %d", PORT);
-    
-    // Set global component
-    global_ddp_component = this;
+void DDPComponent::add_effect(DDPLightEffectBase *light_effect) {
+  if (this->light_effects_.count(light_effect)) {
+    return;
   }
+  this->light_effects_.insert(light_effect);
 }
 
-void DDPComponent::remove_effect(DDPLightEffectBase *effect) {
-  auto it = std::find(this->effects_.begin(), this->effects_.end(), effect);
-  if (it != this->effects_.end())
-    this->effects_.erase(it);
+void DDPComponent::remove_effect(DDPLightEffectBase *light_effect) {
+  this->light_effects_.erase(light_effect);
+}
 
-  // Stop UDP if this was the last effect
-  if (this->effects_.empty()) {
-    this->udp_->stop();
-    global_ddp_component = nullptr;
+bool DDPComponent::process_(const uint8_t *payload, uint16_t size) {
+  if (size < 13) {
+    ESP_LOGE(TAG, "Invalid DDP packet received, too short (size=%d)", size);
+    return false;
   }
+
+  if (payload[4] || payload[5] || payload[6] || payload[7]) {
+    ESP_LOGE(TAG, "Ignoring DDP Packet with non-zero data offset.");
+    return false;
+  }
+
+  uint16_t used = 10;
+
+  for (auto *light_effect : this->light_effects_) {
+    if (used >= size) {
+      return false;
+    }
+    uint16_t new_used = light_effect->process_(payload, size, used);
+    if (new_used == 0) {
+      return false;
+    }
+    used += new_used;
+  }
+
+  return true;
 }
 
 }  // namespace ddp
